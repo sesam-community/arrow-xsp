@@ -45,12 +45,24 @@ class DataAccess:
         url = "%sv2/enrollments/%s/billingperiods" % (base_url, enrollment_number)
         logger.info("Getting %s entities by %s" % (datatype, url))
         response = requests.get(url, headers={'Authorization': "Bearer %s" % jwt_token})
+
+        logger.debug("Got result: %s" % (response.json()))
+
         periods = response.json()
+
+        if "error" in periods:
+            logger.error("Error from billing service: %s" % (periods["error"]["message"]))
+            abort(int(periods["error"]["code"]), periods["error"]["message"])
+
 
         period_nr = len(periods) -1
         while period_nr >= 0:
 
-            period_start = iso8601.parse_date(periods[period_nr]["billingStart"]).date()
+            logger.info("Processing period %s: %s" % (period_nr, periods[period_nr]))
+            try:
+                period_start = iso8601.parse_date(periods[period_nr]["billingStart"]).date()
+            except:
+                logger.error("Cant parse date %s" % (periods[period_nr]["billingStart"]))
 
             if since is None:
                 start = period_start
@@ -187,7 +199,7 @@ if __name__ == '__main__':
     stdout_handler.setFormatter(logging.Formatter(format_string))
     logger.addHandler(stdout_handler)
 
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
 
     app.run(debug=False, host='0.0.0.0', port=5000)
 
