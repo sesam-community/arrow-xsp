@@ -9,161 +9,140 @@ import pytz
 import iso8601
 import requests
 import logging
+import dateutil.parser
 
 app = Flask(__name__)
 
 logger = None
 
-base_url = "https://consumption.azure.com/"
+start = datetime(2019,1,1)
+
+base_url = "https://xsp.arrow.com/index.php"
 
 def datetime_format(dt):
     return '%04d' % dt.year + dt.strftime("-%m-%dT%H:%M:%SZ")
 
+def stream_as_json(generator_function):
+    """
+    Stream list of objects as JSON array
+    :param generator_function:
+    :return:
+    """
+    first = True
+
+    yield '['
+
+    for item in generator_function:
+        if not first:
+            yield ','
+        else:
+            first = False
+
+        yield json.dumps(item)
+
+    yield ']'
+
+
+def add_one_month(t):
+    """Return a `datetime.date` or `datetime.datetime` (as given) that is
+    one month earlier.
+
+    Note that the resultant day of the month might change if the following
+    month has fewer days:
+
+        >>> add_one_month(datetime.date(2010, 1, 31))
+        datetime.date(2010, 2, 28)
+    """
+    import datetime
+    one_day = datetime.timedelta(days=1)
+    one_month_later = t + one_day
+    while one_month_later.month == t.month:  # advance to start of next month
+        one_month_later += one_day
+    target_month = one_month_later.month
+    while one_month_later.day < t.day:  # advance to appropriate day
+        one_month_later += one_day
+        if one_month_later.month != target_month:  # gone too far
+            one_month_later -= one_day
+            break
+    return one_month_later
 
 def to_transit_datetime(dt_int):
     return "~t" + datetime_format(dt_int)
 
-class DataAccess:
-    def __init__(self):
-        self._entities = {"balancesummary": [], "usagedetails": [], "marketplacecharges": [], "billingperiods": [], "reservationcharges": [], "reservationdetails": []}
 
-    def get_entities(self, since, datatype, jwt_token, enrollment_number):
-        if not datatype in self._entities:
-            abort(404)
+def get_entitiesdata(datatype, since, api_key, licenses):
+    # if datatype in self._entities:
+    #     if len(self._entities[datatype]) > 0 and self._entities[datatype][0]["_updated"] > "%sZ" % (datetime.now() - timedelta(hours=12)).isoformat():
+    #        return self._entities[datatype]
 
-        return self.get_entitiesdata(datatype, since, jwt_token, enrollment_number)
+    count = 0
 
-    def get_entitiesdata(self, datatype, since, jwt_token, enrollment_number):
-        # if datatype in self._entities:
-        #     if len(self._entities[datatype]) > 0 and self._entities[datatype][0]["_updated"] > "%sZ" % (datetime.now() - timedelta(hours=12)).isoformat():
-        #        return self._entities[datatype]
+    end = datetime.now(pytz.UTC)
 
-        entities = []
+    if datatype in ["dailyResources"]:
+        periods = (end - since).days # len(result["data"]) -1
+    else:
+        since = since.replace(day = 1)
+        periods = (end.month - since.month) + 1  # len(result["data"]) -1
+        periods += (end.year - since.year) * 12
 
-        end = datetime.now(pytz.UTC).date()
+    logger.info(f"Got {periods} periods")
 
-        url = "%sv2/enrollments/%s/billingperiods" % (base_url, enrollment_number)
-        logger.info("Getting %s entities by %s" % (datatype, url))
-        response = requests.get(url, headers={'Authorization': "Bearer %s" % jwt_token})
+    for period_nr in range(0,periods):
 
-        logger.debug("Got result: %s" % (response.json()))
+        for license in licenses:
 
-        periods = response.json()
+            logger.info(f"Processing period {period_nr}: {(since).strftime('%Y-%m-%d')} for {license}")
+            more = True
 
-        if "error" in periods:
-            logger.error("Error from billing service: %s" % (periods["error"]["message"]))
-            abort(int(periods["error"]["code"]), periods["error"]["message"])
-
-
-        period_nr = len(periods) -1
-        while period_nr >= 0:
-
-            logger.info("Processing period %s: %s" % (period_nr, periods[period_nr]))
-            try:
-                period_start = iso8601.parse_date(periods[period_nr]["billingStart"]).date()
-            except:
-                logger.error("Cant parse date %s" % (periods[period_nr]["billingStart"]))
-
-            if since is None:
-                start = period_start
+            if datatype in ["dailyResources"]:
+                date = (since).strftime("%Y-%m-%d")
+                url = "%s/api/consumption/license/%s/azure/%s?beginDay=%s&endDay=%s" % (
+                base_url, license, datatype, date, date)
             else:
-                start = iso8601.parse_date(since).date()
+                date = (since).strftime("%Y-%m")
+                url = "%s/api/consumption/license/%s/azure/%s?month=%s" % (base_url, license, datatype, date)
 
-            if len(entities) == 0:
-                end = period_start + relativedelta(months=+2)
+            logger.debug("Getting %s entities by %s" % (datatype, url))
 
-            if start <= period_start:
-                more = True
-                url = ""
-                if datatype in ["usagedetails"]:
-                    if periods[period_nr]["usageDetails"] > "":
-                        url = "%s%s" % (base_url,periods[period_nr]["usageDetails"])
-                        logger.info("Getting %s entities - from %s to %s" % (datatype, start, end))
-                elif datatype in ["reservationcharges"]:
-                    url = "%sv3/enrollments/%s/%sbycustomdate?startTime=%s&endTime=%s" % (base_url,enrollment_number,datatype,start,end)
-                    logger.info("Getting %s entities - from %s to %s" % (datatype, start, end))
+            while more and url != "":
+
+                response = requests.get(url, headers={'apikey': api_key})
+
+                logger.debug("Got result: %s" % (response.json()))
+
+                result = response.json()
+
+                if "pagination" in result and "next" in result["pagination"] and result["pagination"]["next"] is not None:
+                    url = base_url + result["pagination"]["next"]
                 else:
-                    url = "%sv2/enrollments/%s/%s" % (base_url, enrollment_number, datatype)
+                    more = False
+
+                if "data" in result:
+                    if datatype in ["dailyResources", "resources"]:
+                        for e in result["data"]:
+                            e.update({"_id": e["resourceId"] + "-" + date})
+                            if "resourceGroup" in e and e["resourceGroup"]:
+                                e.update({"_id": e["_id"] + "-" + e["resourceGroup"].replace('/', '-')})
+                            if "location" in e and e["location"]:
+                                e.update({"_id": e["_id"] + "-" + e["location"].replace('/', '-')})
+                            if "partnerRef" in e and e["partnerRef"]:
+                                e.update({"_id": e["_id"] + "-" + e["partnerRef"].replace('/', '-')})
+                            e.update({"period": date})
+                            e.update({"license": "%s" % license})
+                            e.update({"_updated": "%s" % since.strftime("%Y-%m-%dT%H:%M:%SZ")})
+                            if "date" in e:
+                                e.update({"date": "%s" % to_transit_datetime(since)})
+                            yield e
+                            count += 1;
 
 
+                        logger.info("Gotten %s entities of type %s" % (count, datatype))
 
-                logger.info("Getting %s entities by %s" % (datatype, url))
-
-                while more and url != "":
-                    response = requests.get(url, headers={'Authorization': "Bearer %s" % jwt_token})
-                    logger.info("Got result code %s" % (response))
-                    while response.status_code > 400:
-                        logger.info("Retry url: %s for better result..." % (url))
-                        response = requests.get(url, headers={'Authorization': "Bearer %s" % jwt_token})
-                        logger.info("Got result code %s" % (response))
-
-                    result = response.json()
-                    if "nextLink" in result and result["nextLink"] is not None:
-                        url = result["nextLink"]
-                    else:
-                        more = False
-
-                    if datatype in ["usagedetails", "reservationcharges", "reservationdetails"]:
-
-                        if "data" in result:
-                            if datatype == "usagedetails":
-                                for e in result["data"]:
-                                    e.update({"_id": e["meterId"] + "-" + e["date"] + e["instanceId"].replace('/','-')})
-                                    e.update({"billingPeriodId": "%s" % periods[period_nr]["billingPeriodId"]})
-                                    e.update({"_updated": "%s" % period_start})
-                                    if "date" in e:
-                                        e.update({"date": "%s" % to_transit_datetime(iso8601.parse_date(e["date"]))})
-                                    entities.append(e)
-                                    if period_start >= end:
-                                        break
-
-                            if datatype == "reservationcharges":
-                                for e in result["data"]:
-                                    e.update({"_id": e["reservationOrderId"] + "-" + e["eventDate"] + e["eventDate"].replace('/', '-')})
-                                    if "eventDate" in e:
-                                        e.update({"_updated": "%s" % e["eventDate"]})
-                                        e.update({"eventDate": "%s" % to_transit_datetime(iso8601.parse_date(e["eventDate"]))})
-                                    entities.append(e)
-
-                            if datatype == "reservationdetails":
-                                for e in result["data"]:
-                                    e.update({"_id": e["reservationId"] + "-" + e["usageDate"] + e["instanceId"].replace('/', '-')})
-                                    if "eventDate" in e:
-                                        e.update({"_updated": "%s" % e["eventDate"]})
-                                        e.update({"eventDate": "%s" % to_transit_datetime(iso8601.parse_date(e["eventDate"]))})
-                                    entities.append(e)
-
-                            logger.info("Gotten %s entities of type %s" % (len(entities), datatype))
-
-
-
-                    if datatype == "billingperiods":
-                        for e in result:
-                            e.update({"_id": "%s-%s" % (enrollment_number, e["billingPeriodId"])})
-                            e.update({"_updated": "%s" % e["billingEnd"]})
-                            e.update({"billingEnd": "%s" % to_transit_datetime(iso8601.parse_date(e["billingEnd"]))})
-                            e.update({"billingStart": "%s" % to_transit_datetime(iso8601.parse_date(e["billingStart"]))})
-                            e.update({"balanceSummary": "%s%s" % (base_url,e["balanceSummary"])})
-                            e.update({"usageDetails": "%s%s" % (base_url, e["usageDetails"])})
-                            e.update({"marketplaceCharges": "%s%s" % (base_url, e["marketplaceCharges"])})
-                            e.update({"priceSheet": "%s%s" % (base_url, e["priceSheet"])})
-                            #response = requests.get("https://consumption.azure.com/v2/enrollments/68450484/billingperiods/201803/usagedetails", headers={'Authorization': "Bearer %s" % jwt_token})
-                            #result = response.json()
-                            #e.update({"price": result})
-                            entities.append(e)
-                        logger.info("Gotten %s entities of type %s" % (len(entities), datatype))
-
-                    if period_start >= end:
-                        break
-
-            period_nr -= 1
-
-            if period_start >= end:
-                break
-
-        return entities
-
-data_access_layer = DataAccess()
+        if datatype in ["dailyResources"]:
+            since = since + timedelta(days=1)
+        else:
+            since = add_one_month(since)
 
 def get_var(var, default = None):
     envvar = default
@@ -177,15 +156,30 @@ def get_var(var, default = None):
 
 @app.route('/<datatype>', methods=['GET'])
 def get_entities(datatype):
-    since = get_var('since')
-    jwt_token = get_var('jwt_token')
-    enrollment_number = get_var('enrollment_number')
+    since = dateutil.parser.parse(get_var('since') or "2019-03-01T00:00:00.00000Z")
+    api_key = get_var('api_key')
+    license = get_var('license')
 
-    ent = data_access_layer.get_entities(since, datatype, jwt_token, enrollment_number)
+    logger.info(f"Get data from {since}")
 
-    #entities = sorted(ent, key=lambda k: k["_updated"])
+    if not license:
+        response = requests.get(base_url + "/api/licenses" , headers={'apikey': api_key})
 
-    return Response(json.dumps(ent), mimetype='application/json')
+        logger.debug("Got lisence result: %s" % (response.json()))
+
+        result = response.json()
+        if "data" in result:
+            license = []
+
+            for l in result["data"]["licenses"]:
+                if l["service_ref"] == "MICROSOFT":
+                    logger.info(f"Prepare to prosess license {l['license_id']}")
+                    license.append(l["license_id"])
+    else:
+        license = [license]
+
+
+    return Response(stream_as_json(get_entitiesdata(datatype, since, api_key, license)), mimetype='application/json')
 
 
 
@@ -199,7 +193,7 @@ if __name__ == '__main__':
     stdout_handler.setFormatter(logging.Formatter(format_string))
     logger.addHandler(stdout_handler)
 
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
     app.run(debug=False, host='0.0.0.0', port=5000)
 
