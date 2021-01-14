@@ -19,6 +19,8 @@ start = datetime(2019, 1, 1)
 
 base_url = "https://xsp.arrow.com/index.php"
 
+max_attempts = int(os.environ.get("MAX_ATTEMPTS", "10"))
+
 
 def datetime_format(dt):
     return '%04d' % dt.year + dt.strftime("-%m-%dT%H:%M:%SZ")
@@ -160,8 +162,7 @@ def get_single_month_consumption(license_id, since, api_key):
     }
     params = {"columns[%s]" % ind: header for ind, header in enumerate(headers)}
     month = since.strftime("%Y-%m")
-    response = requests.get(base_url + '/api/consumption/license/%s?month=%s' % (license_id, month), params,
-                            headers={'apikey': api_key}).json()
+    response = fetch_consumption(api_key, license_id, month, params)
 
     #   {
     #     "Vendor Ressource SKU": "ed8a651a-e0a3-4de6-a8ae-3b4ce8cb72cf",
@@ -211,6 +212,21 @@ def get_single_month_consumption(license_id, since, api_key):
         'license': license_id,
         'period': month
     }) for r in result]
+
+
+def fetch_consumption(api_key, license_id, month, params):
+    attempts = 0
+    while attempts < max_attempts:
+        response = requests.get(base_url + '/api/consumption/license/%s?month=%s' % (license_id, month), params,
+                                headers={'apikey': api_key}).json()
+        if 'data' in response:
+            return response
+        else:
+            attempts += 1
+            logger.warning("Failed to fetch month %s for %s (attempt %s of %s)" % (month, month, attempts,
+                                                                                   max_attempts))
+            logger.debug("Failure response: %s" % response)
+    raise Exception('Failed to fetch license %s for month %s after %s' % (license_id, month, max_attempts))
 
 
 if __name__ == '__main__':
