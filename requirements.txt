@@ -1,5 +1,0 @@
-Flask
-pytz
-iso8601
-python-dateutil
-requests

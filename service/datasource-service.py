@@ -1,26 +1,28 @@
-
-from flask import Flask, request, Response, abort
-from datetime import datetime, timedelta
-from dateutil.relativedelta import relativedelta
 import os
 
-import json
+import dateutil
 import pytz
-import iso8601
 import requests
+from flask import Flask, request, Response
+import cherrypy
+from datetime import datetime, timedelta
+import json
 import logging
-import dateutil.parser
+import paste.translogger
+import pandas as pd
 
 app = Flask(__name__)
 
-logger = None
+logger = logging.getLogger("datasource-service")
 
-start = datetime(2019,1,1)
+start = datetime(2019, 1, 1)
 
 base_url = "https://xsp.arrow.com/index.php"
 
+
 def datetime_format(dt):
     return '%04d' % dt.year + dt.strftime("-%m-%dT%H:%M:%SZ")
+
 
 def stream_as_json(generator_function):
     """
@@ -66,25 +68,19 @@ def add_one_month(t):
             break
     return one_month_later
 
+
 def to_transit_datetime(dt_int):
     return "~t" + datetime_format(dt_int)
 
 
-def get_entitiesdata(datatype, since, api_key, licenses):
-    # if datatype in self._entities:
-    #     if len(self._entities[datatype]) > 0 and self._entities[datatype][0]["_updated"] > "%sZ" % (datetime.now() - timedelta(hours=12)).isoformat():
-    #        return self._entities[datatype]
-
+def yield_monthly_consumption(since, api_key, licenses):
     count = 0
 
     end = datetime.now(pytz.UTC)
 
-    if datatype in ["dailyResources"]:
-        periods = (end - since).days # len(result["data"]) -1
-    else:
-        since = since.replace(day = 1)
-        periods = (end.month - since.month) + 1  # len(result["data"]) -1
-        periods += (end.year - since.year) * 12
+    since = since.replace(day=1)
+    periods = (end.month - since.month) + 1  # len(result["data"]) -1
+    periods += (end.year - since.year) * 12
 
     logger.info(f"Got {periods} periods")
 
@@ -92,57 +88,15 @@ def get_entitiesdata(datatype, since, api_key, licenses):
 
         for license in licenses:
 
-            logger.info(f"Processing period {period_nr}: {(since).strftime('%Y-%m-%d')} for {license}")
-            more = True
+            logger.info(f"Processing period {period_nr}: {since.strftime('%Y-%m-%d')} for {license}")
+            results = get_single_month_consumption(license, since, api_key)
+            count += len(results)
+            for entity in results:
+                yield entity
+            logger.info("Yielded %s entities" % count)
 
-            if datatype in ["dailyResources"]:
-                date = (since).strftime("%Y-%m-%d")
-                url = "%s/api/consumption/license/%s/azure/%s?beginDay=%s&endDay=%s" % (
-                base_url, license, datatype, date, date)
-            else:
-                date = (since).strftime("%Y-%m")
-                url = "%s/api/consumption/license/%s/azure/%s?month=%s" % (base_url, license, datatype, date)
+        since = add_one_month(since)
 
-            logger.debug("Getting %s entities by %s" % (datatype, url))
-
-            while more and url != "":
-
-                response = requests.get(url, headers={'apikey': api_key})
-
-                logger.debug("Got result: %s" % (response.json()))
-
-                result = response.json()
-
-                if "pagination" in result and "next" in result["pagination"] and result["pagination"]["next"] is not None:
-                    url = base_url + result["pagination"]["next"]
-                else:
-                    more = False
-
-                if "data" in result:
-                    if datatype in ["dailyResources", "resources"]:
-                        for e in result["data"]:
-                            e.update({"_id": e["resourceId"] + "-" + date})
-                            if "resourceGroup" in e and e["resourceGroup"]:
-                                e.update({"_id": e["_id"] + "-" + e["resourceGroup"].replace('/', '-')})
-                            if "location" in e and e["location"]:
-                                e.update({"_id": e["_id"] + "-" + e["location"].replace('/', '-')})
-                            if "partnerRef" in e and e["partnerRef"]:
-                                e.update({"_id": e["_id"] + "-" + e["partnerRef"].replace('/', '-')})
-                            e.update({"period": date})
-                            e.update({"license": "%s" % license})
-                            e.update({"_updated": "%s" % since.strftime("%Y-%m-%dT%H:%M:%SZ")})
-                            if "date" in e:
-                                e.update({"date": "%s" % to_transit_datetime(since)})
-                            yield e
-                            count += 1;
-
-
-                        logger.info("Gotten %s entities of type %s" % (count, datatype))
-
-        if datatype in ["dailyResources"]:
-            since = since + timedelta(days=1)
-        else:
-            since = add_one_month(since)
 
 def get_var(var, default = None):
     envvar = default
@@ -163,9 +117,9 @@ def get_entities(datatype):
     logger.info(f"Get data from {since}")
 
     if not license:
-        response = requests.get(base_url + "/api/licenses" , headers={'apikey': api_key})
+        response = requests.get(base_url + "/api/licenses", headers={'apikey': api_key})
 
-        logger.debug("Got lisence result: %s" % (response.json()))
+        logger.debug("Got license result: %s" % (response.json()))
 
         result = response.json()
         if "data" in result:
@@ -178,22 +132,114 @@ def get_entities(datatype):
     else:
         license = [license]
 
+    return Response(stream_as_json(yield_monthly_consumption(since, api_key, license)), mimetype='application/json')
 
-    return Response(stream_as_json(get_entitiesdata(datatype, since, api_key, license)), mimetype='application/json')
 
+def get_single_month_consumption(license_id, since, api_key):
+    headers = {
+        "Vendor Ressource SKU",
+        "Vendor Product Name",
+        "Vendor Meter Category",
+        "Vendor Meter Sub-Category",
+        "Resource Group",
+        "UOM",
+        "Country currency code",
+        "Level Chargeable Quantity",
+        "Region",
+        "Resource Name",
+        "Country customer unit",
+        "Vendor Billing Start Date",
+        "Vendor Billing End Date",
+        "Cost Center",
+        "Project",
+        "Environment",
+        "Application",
+        "Custom Tag",
+        "Name",
+        "Usage Start date"
+    }
+    params = {"columns[%s]" % ind: header for ind, header in enumerate(headers)}
+    month = since.strftime("%Y-%m")
+    response = requests.get(base_url + '/api/consumption/license/%s?month=%s' % (license_id, month), params,
+                            headers={'apikey': api_key}).json()
+
+    #   {
+    #     "Vendor Ressource SKU": "ed8a651a-e0a3-4de6-a8ae-3b4ce8cb72cf",
+    #     "Vendor Product Name": "LRS Data Stored",
+    #     "Vendor Meter Category": "Storage",
+    #     "Vendor Meter Sub-Category": "Files",
+    #     "Resource Group": "subscription-853619d1",
+    #     "UOM": "1 GB/Month",
+    #     "Country currency code": "NOK",
+    #     "Level Chargeable Quantity": 0.3072,
+    #     "Region": "northeurope",
+    #     "Resource Name": "subscription853619d1",
+    #     "Country customer unit": 0.4868464,
+    #     "Vendor Billing Start Date": "2020-10-28T00:00:00.000Z",
+    #     "Vendor Billing End Date": "2020-11-27T00:00:00.  000Z",
+    #     "Cost Center": "",
+    #     "Project": "",
+    #     "Environment": "",
+    #     "Application": "",
+    #     "Custom Tag": "",
+    #     "Name": "subscription853619d1",
+    #     "Usage Start date": "2020-10-30T00:00:00.000Z"
+    #   }
+
+    df = pd.DataFrame(columns=response["data"]["headers"], data=response["data"]["lines"])
+    if df.empty:
+        return []
+    # Resource Group can vary in case within a month :(
+    df['Resource Group'] = df['Resource Group'].str.lower()
+    index = [
+        'Resource Group',
+        'Vendor Meter Category',
+        'Vendor Meter Sub-Category',
+        'Vendor Product Name',
+        'Vendor Ressource SKU',
+        'Region',
+        'Resource Name',
+        'Country currency code',
+        'Name'
+    ]
+    pivot = df.pivot_table(index=index, values=['Country customer unit'], aggfunc='sum')
+    # TODO see if we can just construct it how we want from the DF instead
+    result = json.loads(pivot.to_json(orient='table'))["data"]
+    return [dict(r, **{
+        '_id': "%s_%s_%s" % (r["Resource Name"], r["Vendor Ressource SKU"], month),
+        '_updated': since.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        'license': license_id,
+        'period': month
+    }) for r in result]
 
 
 if __name__ == '__main__':
-    # Set up logging
     format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    logger = logging.getLogger('azure-billing-microservice')
 
-    # Log to stdout
+    # Log to stdout, change to or add a (Rotating)FileHandler to log to a file
     stdout_handler = logging.StreamHandler()
     stdout_handler.setFormatter(logging.Formatter(format_string))
     logger.addHandler(stdout_handler)
 
+    # Comment these two lines if you don't want access request logging
+    app.wsgi_app = paste.translogger.TransLogger(app.wsgi_app, logger_name=logger.name,
+                                                 setup_console_handler=False)
+    app.logger.addHandler(stdout_handler)
+
+    logger.propagate = False
     logger.setLevel(logging.INFO)
 
-    app.run(debug=False, host='0.0.0.0', port=5000)
+    cherrypy.tree.graft(app, '/')
 
+    # Set the configuration of the web server to production mode
+    cherrypy.config.update({
+        'environment': 'production',
+        'engine.autoreload_on': False,
+        'log.screen': True,
+        'server.socket_port': 5000,
+        'server.socket_host': '0.0.0.0'
+    })
+
+    # Start the CherryPy WSGI web server
+    cherrypy.engine.start()
+    cherrypy.engine.block()

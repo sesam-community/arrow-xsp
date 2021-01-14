@@ -1,4 +1,3 @@
-# salesforce
-Sesam datasource that reads data from Azure billing
+# Arrow XSP
 
-[![Build Status](https://travis-ci.org/sesam-community/salesforce.svg?branch=master)](https://travis-ci.org/sesam-community/salesforce)
+Sesam datasource that reads data from the Arrow XSP API

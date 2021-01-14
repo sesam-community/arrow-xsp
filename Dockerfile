@@ -1,10 +1,7 @@
-FROM python:3-alpine
-RUN apk update
-RUN pip3 install --upgrade pip
-RUN apk --update add build-base libffi-dev libressl-dev python-dev py-pip
-RUN pip install cryptography
-COPY requirements.txt requirements.txt
-RUN pip3 install -r requirements.txt
+FROM python
 COPY ./service /service
-EXPOSE 5000
-CMD ["python3","-u","./service/datasource-service.py"]
+WORKDIR /service
+RUN pip install -r requirements.txt
+EXPOSE 5000/tcp
+ENTRYPOINT ["python"]
+CMD ["datasource-service.py"]
