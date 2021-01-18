@@ -199,7 +199,6 @@ def get_single_month_consumption(license_id, since, api_key):
         'Resource Group',
         'UOM',
         'Country currency code',
-        'Level Chargeable Quantity',
         'Region',
         'Resource Name',
         'Vendor Billing Start Date',
@@ -211,7 +210,8 @@ def get_single_month_consumption(license_id, since, api_key):
         'Custom Tag',
         'Name'
     ]
-    pivot = df.pivot_table(index=index, values=['Country customer unit'], aggfunc='sum')
+    pivot = df.pivot_table(index=index, values=['Level Chargeable Quantity', 'Country customer unit'],
+                           aggfunc={'Level Chargeable Quantity': 'sum', 'Country customer unit': 'mean'})
     # TODO see if we can just construct it how we want from the DF instead
     result = json.loads(pivot.to_json(orient='table'))["data"]
     return [dict(r, **{
