@@ -97,6 +97,9 @@ def yield_monthly_consumption(since, api_key, licenses):
                 yield entity
             logger.info("Yielded %s entities" % count)
 
+            #TODO remove
+            return
+
         since = add_one_month(since)
 
 
@@ -191,29 +194,27 @@ def get_single_month_consumption(license_id, since, api_key):
         return []
     # Resource Group can vary in case within a month :(
     df['Resource Group'] = df['Resource Group'].str.lower()
-    # reverse engineering, no documentation found
-    # Consumption download report from Arrow has a column Country reseller unit/total that is not available
-    # in this API:
-    # Columns not allowed (Country reseller total), here's a list of the allowed columns :
-    # Vendor Ressource SKU,Vendor Product Name,Vendor Meter Category,Vendor Meter Sub-Category,
-    # Resource Group,UOM,Country currency code,Level Chargeable Quantity,Region,Resource Name,
-    # Country customer unit,Vendor Billing Start Date,Vendor Billing End Date,Cost Center,
-    # Project,Environment,Application,Custom Tag,Name,Usage Start date,Report Period
-    #
-    # We guesstimate it by reducing it with 15% which seems to be the surcharge in their price list
-    df['Quantity'] = df['Level Chargeable Quantity'] * df['Country customer unit'] * 0.85
     index = [
-        'Resource Group',
+        'Vendor Ressource SKU',
+        'Vendor Product Name',
         'Vendor Meter Category',
         'Vendor Meter Sub-Category',
-        'Vendor Product Name',
-        'Vendor Ressource SKU',
+        'Resource Group',
+        'UOM',
+        'Country currency code',
+        'Level Chargeable Quantity',
         'Region',
         'Resource Name',
-        'Country currency code',
+        'Vendor Billing Start Date',
+        'Vendor Billing End Date',
+        'Cost Center',
+        'Project',
+        'Environment',
+        'Application',
+        'Custom Tag',
         'Name'
     ]
-    pivot = df.pivot_table(index=index, values=['Quantity'], aggfunc='sum')
+    pivot = df.pivot_table(index=index, values=['Country customer unit'], aggfunc='sum')
     # TODO see if we can just construct it how we want from the DF instead
     result = json.loads(pivot.to_json(orient='table'))["data"]
     return [dict(r, **{
