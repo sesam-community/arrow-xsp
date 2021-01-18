@@ -97,9 +97,6 @@ def yield_monthly_consumption(since, api_key, licenses):
                 yield entity
             logger.info("Yielded %s entities" % count)
 
-            #TODO remove
-            return
-
         since = add_one_month(since)
 
 
