@@ -109,7 +109,6 @@ def get_var(var, default = None):
     logger.debug("Setting %s = %s" % (var, envvar))
     return envvar
 
-
 @app.route('/<datatype>', methods=['GET'])
 def get_entities(datatype):
     since = dateutil.parser.parse(get_var('since') or "2019-03-01T00:00:00.00000Z")
@@ -192,6 +191,17 @@ def get_single_month_consumption(license_id, since, api_key):
         return []
     # Resource Group can vary in case within a month :(
     df['Resource Group'] = df['Resource Group'].str.lower()
+    # reverse engineering, no documentation found
+    # Consumption download report from Arrow has a column Country reseller unit/total that is not available
+    # in this API:
+    # Columns not allowed (Country reseller total), here's a list of the allowed columns :
+    # Vendor Ressource SKU,Vendor Product Name,Vendor Meter Category,Vendor Meter Sub-Category,
+    # Resource Group,UOM,Country currency code,Level Chargeable Quantity,Region,Resource Name,
+    # Country customer unit,Vendor Billing Start Date,Vendor Billing End Date,Cost Center,
+    # Project,Environment,Application,Custom Tag,Name,Usage Start date,Report Period
+    #
+    # We guesstimate it by reducing it with 15% which seems to be the surcharge in their price list
+    df['Quantity'] = df['Level Chargeable Quantity'] * df['Country customer unit'] * 0.85
     index = [
         'Resource Group',
         'Vendor Meter Category',
@@ -203,11 +213,13 @@ def get_single_month_consumption(license_id, since, api_key):
         'Country currency code',
         'Name'
     ]
-    pivot = df.pivot_table(index=index, values=['Country customer unit'], aggfunc='sum')
+    pivot = df.pivot_table(index=index, values=['Quantity'], aggfunc='sum')
     # TODO see if we can just construct it how we want from the DF instead
     result = json.loads(pivot.to_json(orient='table'))["data"]
     return [dict(r, **{
-        '_id': "%s_%s_%s" % (r["Resource Name"], r["Vendor Ressource SKU"], month),
+        # TODO should this be done here or just be constructed in the pipe that reads in this data?
+        '_id': "%s_%s_%s_%s_%s"
+               % (license_id, r["Resource Group"], r["Resource Name"], month, r["Vendor Ressource SKU"]),
         '_updated': since.strftime("%Y-%m-%dT%H:%M:%SZ"),
         'license': license_id,
         'period': month
@@ -223,7 +235,7 @@ def fetch_consumption(api_key, license_id, month, params):
             return response
         else:
             attempts += 1
-            logger.warning("Failed to fetch month %s for %s (attempt %s of %s)" % (month, month, attempts,
+            logger.warning("Failed to fetch month %s for license %s (attempt %s of %s)" % (month, license_id, attempts,
                                                                                    max_attempts))
             logger.debug("Failure response: %s" % response)
     raise Exception('Failed to fetch license %s for month %s after %s' % (license_id, month, max_attempts))
