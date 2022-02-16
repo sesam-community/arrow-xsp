@@ -18,7 +18,7 @@ logger = logging.getLogger("datasource-service")
 
 start = datetime(2019, 1, 1)
 
-base_url = "https://public-api-prod-api.myportal.cloud/"
+base_url = "https://public-api-prod-api.myportal.cloud"
 
 max_attempts = int(os.environ.get("MAX_ATTEMPTS", "10"))
 
@@ -119,7 +119,7 @@ def get_entities(datatype):
     logger.info(f"Get data from {since}")
 
     if not license:
-        response = requests.get(base_url + "/api/licenses", headers={'apikey': api_key})
+        response = requests.get(base_url + "/licenses", headers={'apikey': api_key})
 
         logger.debug("Got license result: %s" % (response.json()))
 
