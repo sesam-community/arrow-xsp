@@ -4,3 +4,4 @@ Paste==2.0.2
 Pandas==1.1.5
 pytz==2020.5
 requests==2.25.1
+itsdangerous==2.0.1
