@@ -158,7 +158,8 @@ def get_single_month_consumption(license_id, since, api_key):
         "Application",
         "Custom Tag",
         "Name",
-        "Usage Start date"
+        "Usage Start date",
+        "Country reseller total",
     }
     params = {"columns[%s]" % ind: header for ind, header in enumerate(headers)}
     month = since.strftime("%Y-%m")
@@ -211,8 +212,9 @@ def get_single_month_consumption(license_id, since, api_key):
         'Custom Tag',
         'Name'
     ]
-    pivot = df.pivot_table(index=index, values=['Level Chargeable Quantity', 'Country customer unit'],
-                           aggfunc={'Level Chargeable Quantity': 'sum', 'Country customer unit': 'mean'})
+    pivot = df.pivot_table(index=index, values=['Level Chargeable Quantity', 'Country customer unit', 'Country reseller total'],
+                           aggfunc={'Level Chargeable Quantity': 'sum', 'Country customer unit': 'mean',
+                                    'Country reseller total': 'sum'})
     # TODO see if we can just construct it how we want from the DF instead
     result = json.loads(pivot.to_json(orient='table'))["data"]
     return [dict(r, **{
@@ -230,6 +232,7 @@ def fetch_consumption(api_key, license_id, month, params):
     next_page = '/consumption/license/%s?month=%s&noGroup=1&page=1&per_page=5000&%s' % (license_id, month,
                                                                                         urlencode(params))
     while next_page:
+        logger.info("Fetching: %s" % next_page)
         response = requests.get(base_url + next_page, headers={'apikey': api_key}).json()
         if not result:
             # first page
